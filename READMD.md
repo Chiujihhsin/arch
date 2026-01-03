@@ -1,5 +1,7 @@
 # 建築即是動物
  這個程式的功能是在將一個初始量體切割成多個部分，並透過遞迴演算法嘗試不同的變化方式（旋轉、翻轉、位移），最後以樹狀圖的形式視覺化呈現所有可能的組合，並自動標示出發生碰撞的失敗案例。
+ 
+![messageImage_1767444639615](https://github.com/user-attachments/assets/704c7bd7-4819-4a33-b344-4170474541a8)
 
 
 ## 1.導入資料庫(Library)
@@ -133,11 +135,11 @@ cap=True 參數：自動補上切割面，確保切完後的零件依然是密�
         
         return True
 
-###進階檢測
+### 進階檢測
 快速過濾沒過關的再精準的測一次碰撞。
 #### 運作邏輯：
 防錯縮放：將測試物件暫時縮小 1%，避免剛好貼在一起的面被誤判為碰撞。  
-精確點雲檢查：檢查兩個量體之間是否存在彼此的點在對方模型內部，只要有任何一個點跑進去，就判定為發生碰撞。  
+精確點雲檢查：檢查兩個量體之間是否存在彼此的點在對方模型內部(雙向迴圈)，只要有任何一個點跑進去，就判定為發生碰撞。  
 異常處理：避免前幾步驟的cap失效，如果有模型破洞就直接視為有碰撞，避免產出更多有問題的子代。
     
     def check_collision(target_mesh, other_meshes):
@@ -166,7 +168,8 @@ cap=True 參數：自動補上切割面，確保切完後的零件依然是密�
         return False
     
 ## 5. 定義樹狀圖生成
-
+### 空間計算
+導入先前設定的樹狀圖大小參數。
     
     def build_tree_recursive(current_meshes, depth, x_center, available_width, viewer, is_failed=False):
         """
@@ -175,7 +178,13 @@ cap=True 參數：自動補上切割面，確保切完後的零件依然是密�
         
         y_pos = -depth * LAYER_HEIGHT
         is_final_layer = (depth >= len(current_meshes))
-        
+
+### 視覺化顯示
+將模型繪製到場景中。
+#### 運作邏輯：
+碰撞失敗 (if is_failed)：會顯示有透明度的灰色量體，方便看清碰撞原因。  
+正常狀態 (else)：會顯示彩色，下一步要變化的小量體會是實色，其他則有透明度。
+       
         # --- A. 顯示模型 ---
         for i, mesh in enumerate(current_meshes):
             display_mesh = mesh.copy()
@@ -198,12 +207,23 @@ cap=True 參數：自動補上切割面，確保切完後的零件依然是密�
             
             unique_name = f"L{depth}_X{int(x_center*10)}_{i}_{'FAIL' if is_failed else 'OK'}"
             viewer.scene.add(compas_mesh, name=unique_name, facecolor=c, opacity=opacity_val, show_edges=show_edges_val)
-    
+### 遞迴終止
+防止程式無限執行或產生無效路徑。
+#### 運作邏輯：
+自然結束：當深度 (depth) 已經處理完最後一個零件，代表這條路徑已經生成完畢，停止生長。  
+碰撞截斷：當發生碰撞，則不再繼續生成下一代。
+
         # --- B. 終止條件 ---
         # 如果已經到底層，或者「已經失敗(碰撞)」，就不再生下一代了
         if is_final_layer or is_failed:
             return
-    
+### 分支衍生與碰撞傳遞
+若未發生碰撞，程式會嘗試生成下一代。
+#### 運作邏輯：   
+執行變形：嘗試所有可能，以獨立沙盒操作，確保每一次嘗試都不會汙染到原始資料。  
+碰撞檢測：在生成子節點之前，檢查剛移動過的零件是否撞到了其他靜止的零件，將結果存入 is_collision_happened。  
+遞迴呼叫 (Next Step)：計算子節點在 X 軸的座標，讓樹狀圖左右展開。呼叫自己進入下一層 (depth + 1)，並將「是否發生碰撞」作為 is_failed 參數傳遞下去。
+
         # --- C. 產生下一層 ---
         num_branches = len(POSSIBLE_STATES)
         sub_width = available_width / num_branches
@@ -235,9 +255,11 @@ cap=True 參數：自動補上切割面，確保切完後的零件依然是密�
             # 如果 is_collision_happened 是 True，下一層就會被畫成灰色，然後停止
             build_tree_recursive(next_meshes, depth + 1, child_x, sub_width, viewer, is_failed=is_collision_happened)
     
- # ==========================================================
- # 5. 主程式
- # ==========================================================
+ 
+ # 6. 主程式
+
+#### 運作邏輯：   
+初始化視覺化引擎、建立初始量體、執行初始切割、啟動遞迴生成、渲染與顯示。  
     
     if __name__ == "__main__":
         viewer = Viewer()
@@ -261,3 +283,33 @@ cap=True 參數：自動補上切割面，確保切完後的零件依然是密�
     
         print("=== 生成完畢 ===")
         viewer.show()
+
+# 檢討與未來展望
+
+目前已經達成幾何遞迴生成與視覺化，但在計算效能與物理精確度上仍有改進空間。以下列出目前版本的限制與可能的改善方向：
+
+### 1. 碰撞檢測機制
+* **目前狀況**：採用手寫的 `AABB`（粗篩）搭配 `Vertex Containment`（頂點包含檢測）。
+* **潛在問題**：
+    * **漏判 (False Negatives)**：若兩個模型互相穿插，但各自的頂點剛好都沒有進入對方的內部（例如兩個薄片呈十字交叉），目前的算法會誤判為「無碰撞」。
+    * **效能瓶頸**：隨著遞迴深度增加，物件數量呈指數成長，`O(N^2)` 的雙向迴圈檢查會顯著拖慢生成速度。
+* **改善建議**：改用 **`trimesh.collision.CollisionManager`**（基於 FCL 庫）。支援更精確的 Mesh-to-Mesh 檢測，且運算速度遠快於 Python 迴圈。
+
+### 2. 記憶體管理
+* **目前狀況**：每一次遞迴都會執行 `mesh.copy()` 產生全新的網格物件並存入記憶體。
+* **潛在問題**：當遞迴深度 (`depth`) 超過 5 或 6 層時，場景中可能會有數千個網格物件，易導致 記憶體耗盡 或 Viewer 卡頓。
+* **改善建議**：導入 **幾何實例化 (Geometry Instancing)** 技術。
+    * 只在記憶體中保存一份「基礎零件」的幾何資料。
+    * 樹狀圖中的每一個節點僅紀錄 **「變換矩陣 (Transformation Matrix)」**。
+    * 渲染時再動態繪製，可大幅降低 RAM 的佔用率。
+
+### 3. 切割演算法
+* **目前狀況**：依賴 `trimesh.slice_plane(cap=True)` 與 `mapbox_earcut`。
+* **潛在問題**：當切割平面剛好經過模型的頂點或邊線時，偶爾會產生 **非流形幾何 (Non-manifold geometry)** 或極小的破碎面，導致後續的布林運算或體積計算出錯。
+* **改善建議**：
+    * 在切割前加入 **`mesh.merge_vertices()`** 進行預處理。
+    * 實作錯誤重試機制：若切割失敗，微幅偏移切割平面 (例如 `+0.0001`) 再重試。
+
+### 4. 參數設定
+* **目前狀況**：切割平面 (`CUT_PLANES`) 與變形規則 (`POSSIBLE_STATES`) 直接寫死在程式碼中。
+* **改善建議**：將參數抽離至 **`config.json`** 或 YAML 檔，無需修改程式碼即可快速測試不同的生長邏輯與切割方案。
